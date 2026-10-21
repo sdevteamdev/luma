@@ -1530,7 +1530,7 @@ function M.parse(s)
  return {text=s,links=links}
 end
 return M
-]],false,3949,3313053040)
+]],false,3951,1327902160)
  save([[/usr/lib/lumatv/sound.lua]],[[-- AudioPerf tape_drive driver: chunked DFPWM loading, transport, clock for A/V sync.
 local component=require('component')
 local computer=require('computer')
