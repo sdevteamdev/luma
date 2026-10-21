@@ -1,7 +1,7 @@
--- Luma TV 2.0.2. OpenOS installer, Lua 5.2/5.3/5.4.
+-- Luma TV 2.0.3. OpenOS installer, Lua 5.2/5.3/5.4.
 -- Run: lua /home/luma-install.lua
 local function install()
- print('Luma TV 2.0.2: installation / установка')
+ print('Luma TV 2.0.3: installation / установка')
  local fs=require('filesystem')
  local total=0
  local function b64(s)
@@ -139,7 +139,7 @@ if force or not fs.exists(bmp) then
  end;assert(f:flush());f:close();print('Создано '..bmp)
 end
 ]],false,3823,3538152112)
- save([[/usr/bin/tv.lua]],[[-- Luma TV 2.0. Graphical home screen for OpenOS; no EEPROM changes, no host-side runtime.
+ save([[/usr/bin/tv.lua]],[[-- Luma TV 2.0.3. Graphical home screen for OpenOS; no EEPROM changes, no host-side runtime.
 local component=require('component')
 local computer=require('computer')
 local event=require('event')
@@ -355,7 +355,11 @@ local function modalEvent(e)
  elseif e[1]=='touch' then ui:activate(e[3],e[4]);mark() end
 end
 local function loop()
- gpu.setDepth(gpu.maxDepth());gpu.setResolution(config.width,config.height)
+ -- Rebooted T4 advertises maxDepth=16, but setDepth(16) throws.
+ -- Keep the existing working mode, including native 16-bit T4 mode.
+ -- Only upgrade monochrome mode to the universally supported 4-bit mode.
+ if gpu.getDepth()<4 then gpu.setDepth(4) end
+ gpu.setResolution(config.width,config.height)
  ui=UI.new(gpu,config.width,config.height);ctx.applyConfig()
  pcall(boot.show,ui,config)
  term.setCursorBlink(false)
@@ -383,7 +387,8 @@ local ok,err=xpcall(loop,debug.traceback)
 if current and current.close then pcall(current.close) end
 -- Always restore terminal state, including tier-2 palette, even after application errors.
 pcall(function()
- gpu.setDepth(oldDepth);gpu.setResolution(oldW,oldH)
+ if gpu.getDepth()~=oldDepth then pcall(gpu.setDepth,oldDepth) end
+ gpu.setResolution(oldW,oldH)
  for i,c in pairs(palette) do gpu.setPaletteColor(i,c) end
  gpu.setForeground(oldFg,oldFp);gpu.setBackground(oldBg,oldBp)
  term.clear();term.setCursor(1,1);term.setCursorBlink(true)
@@ -392,7 +397,7 @@ if not ok then
  store.write('/home/lumatv/last-error.log',tostring(err))
  io.stderr:write('Luma TV завершилась с ошибкой. Отчёт: /home/lumatv/last-error.log\n'..tostring(err)..'\n')
 end
-]],false,13945,245819928)
+]],false,14216,1367360945)
  save([[/home/lumatv/SDK_RU.md]],[[# Luma TV · SDK для своих приложений
 
 Свои приложения — это обычные .lua-файлы в папке `/home/lumatv/apps/`.
