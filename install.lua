@@ -1,7 +1,7 @@
--- Luma TV 2.0.4. OpenOS installer, Lua 5.2/5.3/5.4.
+-- Luma TV 2.1.1. OpenOS installer, Lua 5.2/5.3/5.4.
 -- Run: lua /home/luma-install.lua
 local function install()
- print('Luma TV 2.0.4: installation / установка')
+ print('Luma TV 2.1.1: installation / установка')
  local fs=require('filesystem')
  local total=0
  local function b64(s)
@@ -139,7 +139,7 @@ if force or not fs.exists(bmp) then
  end;assert(f:flush());f:close();print('Создано '..bmp)
 end
 ]],false,3823,3538152112)
- save([[/usr/bin/tv.lua]],[[-- Luma TV 2.0.4. Graphical home screen for OpenOS; no EEPROM changes, no host-side runtime.
+ save([[/usr/bin/tv.lua]],[[-- Luma TV 2.1.1. Graphical home screen for OpenOS; no EEPROM changes, no host-side runtime.
 local component=require('component')
 local computer=require('computer')
 local event=require('event')
@@ -174,15 +174,19 @@ local function fittedResolution()
  return w,h
 end
 local fitW,fitH=fittedResolution()
-local config={accent='mint',motion=true,fit=true,width=fitW,height=fitH}
+-- Light mode is intentionally the default: stock OpenComputers CPUs should not
+-- spend their whole budget repainting decorative UI.
+local config={accent='mint',motion=false,light=true,fit=true,width=fitW,height=fitH}
 local settings=store.read('/home/lumatv/settings.cfg',4096) or ''
 local sawFit=false
 for k,v in settings:gmatch('([%a]+)=([^\n]+)') do
  if k=='accent' and (v=='mint' or v=='lilac' or v=='amber') then config.accent=v
  elseif k=='motion' then config.motion=v=='1'
+ elseif k=='light' then config.light=v=='1'
  elseif k=='fit' then config.fit=v=='1';sawFit=true
  elseif k=='width' or k=='height' then config[k]=tonumber(v) or config[k] end
 end
+if config.light then config.motion=false end
 -- Migrate the old 2.0.3 default. Preserve other manually selected modes.
 if settings~='' and not sawFit and not (config.width==120 and config.height==40) then config.fit=false end
 if config.fit then config.width,config.height=fitW,fitH end
@@ -197,7 +201,7 @@ ctx.dirty=mark
 function ctx.area() return {x=3,y=6,w=ui.w-4,h=ui.h-9} end
 function ctx.toast(s) toast=tostring(s);toastUntil=computer.uptime()+4;mark() end
 function ctx.saveConfig()
- local s='accent='..config.accent..'\nmotion='..(config.motion and '1' or '0')..'\nfit='..(config.fit and '1' or '0')..'\nwidth='..config.width..'\nheight='..config.height..'\n'
+ local s='accent='..config.accent..'\nmotion='..(config.motion and '1' or '0')..'\nlight='..(config.light and '1' or '0')..'\nfit='..(config.fit and '1' or '0')..'\nwidth='..config.width..'\nheight='..config.height..'\n'
  local ok,e=store.write('/home/lumatv/settings.cfg',s);if not ok then ctx.toast('Настройки не сохранены: '..tostring(e)) end
  mark()
 end
@@ -228,6 +232,60 @@ function ctx.choose(title,text,choices) openModal({kind='choice',title=title,tex
 function ctx.autostart(on)
  local ok,e=require('lumatv.startup').set(on)
  if ok then ctx.toast(on and 'Автозапуск включён. F10 — выход.' or 'Автозапуск выключен') else ctx.alert('Ошибка автозапуска',tostring(e)) end
+end
+function ctx.update()
+ ctx.choose('Обновление Luma TV','Будет установлен локальный /home/luma-tv-update.lua или пакет по адресу из /home/lumatv/update-url.txt. После установки компьютер перезапустится.',{
+  {'Обновить',function()
+   local path='/home/luma-tv-update.lua'
+   local url=store.read('/home/lumatv/update-url.txt',2048)
+   if url then url=url:match('^%s*(.-)%s*$') end
+   local payload
+   if fs.exists(path) then payload=store.read(path,2097152)
+   elseif url and url:match('^https?://[^%s]+$') then
+    if not component.isAvailable('internet') then ctx.alert('Обновление','Нужна интернет-карта или файл '..path);return end
+    ctx.toast('Загружаю обновление…')
+    local ok,h=pcall(component.internet.request,url,nil,{['User-Agent']='LumaTV/2.1 updater'})
+    if not ok or not h then ctx.alert('Обновление',tostring(h));return end
+    local chunks,size={},0
+    local connected=false
+    for _=1,500 do
+     if not connected then
+      local okc,r,e=pcall(h.finishConnect)
+      if not okc or (r==nil and e) then pcall(h.close);ctx.alert('Обновление',tostring(e or r));return end
+      connected=r==true
+     else
+      local okr,s,e=pcall(h.read,4096)
+      if not okr then pcall(h.close);ctx.alert('Обновление',tostring(s));return end
+      if s==nil then
+       pcall(h.close)
+       if e then ctx.alert('Обновление',tostring(e));return end
+       break
+      end
+      size=size+#s
+      if size>2097152 then pcall(h.close);ctx.alert('Обновление','Пакет больше 2 МиБ');return end
+      chunks[#chunks+1]=s
+     end
+     if os.sleep then os.sleep(0.05) end
+    end
+    payload=table.concat(chunks)
+   else
+    ctx.alert('Обновление','Положите новый install.lua в '..path..' или запишите его HTTPS-адрес в /home/lumatv/update-url.txt')
+    return
+   end
+   if not payload or not payload:find('Luma TV',1,true) or not payload:find('local function install()',1,true) then ctx.alert('Обновление','Файл не похож на установщик Luma TV');return end
+   local tmp='/home/luma-tv-update.running.lua'
+   local wrote,er=store.write(tmp,payload)
+   if not wrote then ctx.alert('Обновление',tostring(er));return end
+   local fn,le=loadfile(tmp)
+   if not fn then fs.remove(tmp);ctx.alert('Обновление',tostring(le));return end
+   local ran,re=pcall(fn);fs.remove(tmp)
+   if not ran then ctx.alert('Обновление',tostring(re));return end
+   ctx.toast('Обновлено. Перезапуск…')
+   if os.sleep then os.sleep(1) end
+   computer.shutdown(true)
+  end},
+  {'Отмена',function() end}
+ })
 end
 local function cleanupApp()
  if current and current.close then pcall(current.close) end
@@ -387,7 +445,7 @@ local function loop()
  term.setCursorBlink(false)
  while running do
   if dirty then render() end
-  local e={event.pull(0.05)}
+  local e={event.pull(config.light and 0.10 or 0.05)}
   if e[1]=='interrupted' then quit()
   elseif e[1]=='key_down' and e[4]==68 then if modal then closeModal() end;quit()
   elseif modal then guarded(modalEvent,e)
@@ -402,7 +460,8 @@ local function loop()
   end
   local now=computer.uptime()
   if not modal and current and current.tick then if guarded(current.tick,now) then mark() end end
-  if math.floor(now)~=homeTick then homeTick=math.floor(now);mark() end
+  local clockTick=math.floor(now/(config.light and 5 or 1))
+  if clockTick~=homeTick then homeTick=clockTick;mark() end
  end
 end
 local ok,err=xpcall(loop,debug.traceback)
@@ -419,7 +478,7 @@ if not ok then
  store.write('/home/lumatv/last-error.log',tostring(err))
  io.stderr:write('Luma TV завершилась с ошибкой. Отчёт: /home/lumatv/last-error.log\n'..tostring(err)..'\n')
 end
-]],false,15299,3048848348)
+]],false,18481,332063069)
  save([[/home/lumatv/SDK_RU.md]],[[# Luma TV · SDK для своих приложений
 
 Свои приложения — это обычные .lua-файлы в папке `/home/lumatv/apps/`.
@@ -562,6 +621,8 @@ function M.media(ctx,arg)
  local self={items={},top=1,index=1,playing=false,frame=nil,stream=nil,frameNo=1,nextAt=0,loop=true,vol=1,writer=nil,audioLen=0}
  local function tapeStop() if sound.available() then pcall(sound.stop) end end
  local function stop()
+  if self.writer and self.writer.close then pcall(self.writer.close) end
+  self.writer=nil
   if self.stream then self.stream.close();self.stream=nil end
   self.playing=false;self.frame=nil;self.audioOnly=nil;tapeStop()
  end
@@ -569,7 +630,7 @@ function M.media(ctx,arg)
   self.items={}
   for _,v in ipairs(store.list('/home/lumatv/media') or {}) do
    if not v.dir then
-    local ext=v.name:lower():match('%.([^.]*)$');if ext=='bmp' or ext=='ltv' or ext=='ltva' then self.items[#self.items+1]=v end
+    local ext=v.name:lower():match('%.([^.]*)$');if ext=='bmp' or ext=='ltv' or ext=='ltva' or ext=='lvd' then self.items[#self.items+1]=v end
    end
   end
   for _,v in ipairs(store.list('/home/lumatv/music') or {}) do
@@ -581,12 +642,16 @@ function M.media(ctx,arg)
   stop();local ext=path:lower():match('%.([^.]*)$')
   local ok,e=pcall(function()
    if ext=='bmp' then self.frame=codec.bmp(path)
-   elseif ext=='ltv' or ext=='ltva' then
-    self.stream=ext=='ltva' and codec.ltva(path) or codec.ltv(path)
+   elseif ext=='ltv' or ext=='ltva' or ext=='lvd' then
+    self.stream=ext=='ltva' and codec.ltva(path) or (ext=='lvd' and codec.lvd(path) or codec.ltv(path))
     self.frame=self.stream.frame(1);self.frameNo=1;self.nextAt=computer.uptime()+1/self.stream.fps
     self.audioLen=self.stream.audioBytes or 0
     if self.audioLen>0 then
-     local w,er=sound.writer(self.stream.audio())
+     local w,er
+     if self.stream.audioSource then
+      local ap,ao,an=self.stream.audioSource()
+      w,er=sound.writerFile(ap,ao,an)
+     else w,er=sound.writer(self.stream.audio()) end
      if w then self.writer=w;self.audioPlaying=true;self.playing=true
      else ctx.toast(er..(sound.available() and '' or ' — звук отключён'));self.playing=true end
     else self.playing=true end
@@ -594,7 +659,7 @@ function M.media(ctx,arg)
     local data,er=store.read(path,4194304);assert(data,er)
     local w,er2=sound.writer(data);assert(w,er2)
     self.writer=w;self.audioOnly=true;self.audioLen=#data;self.audioPlaying=true;self.playing=true
-   else error('Поддерживаются BMP, LTV, LTVA и DFPWM',0) end
+   else error('Поддерживаются BMP, LTV, LTVA, LVD и DFPWM',0) end
    self.name=fs.name(path)
   end)
   if not ok then stop();ctx.alert('Не удалось открыть',tostring(e)) end
@@ -640,7 +705,7 @@ function M.media(ctx,arg)
   elseif self.frame then codec.draw(ui,self.frame,vx,y+2,vw,vh)
   else
    ui:icon('media',vx+math.floor(vw/2)-5,y+math.max(2,math.floor(vh/2)-2),0x080D15)
-   ui:text(vx+2,y+vh,'BMP / LTV / LTVA / DFPWM',ui.c.muted,0x080D15,vw-4)
+   ui:text(vx+2,y+vh,'BMP / LTV / LTVA / LVD / DFPWM',ui.c.muted,0x080D15,vw-4)
   end
   local by=y+h-5
   ui:button('media-refresh',x,by,lw,'Обновить',self.refresh)
@@ -672,7 +737,14 @@ function M.media(ctx,arg)
   end
   if self.playing and self.audioPlaying and sound.available() then
    local pos=sound.position()
-   if sound.atEnd() then sound.stop();sound.play();pos=0 end
+   if sound.atEnd() then
+    sound.stop()
+    self.playing=false;self.audioPlaying=false
+    self.audioPos=self.audioLen
+    if self.stream then self.frameNo=self.stream.count;self.frame=self.stream.frame(self.frameNo) end
+    ctx.toast('Воспроизведение завершено')
+    return true
+   end
    self.audioPos=pos
    if self.stream then
     local fn=math.floor(pos/sound.BYTES_PER_SEC*self.stream.fps)%self.stream.count+1
@@ -695,7 +767,7 @@ function M.media(ctx,arg)
   end
   return false
  end
- function self.close() if self.writer then tapeStop() end;self.writer=nil;stop() end
+ function self.close() if self.writer then tapeStop() end;stop() end
  self.refresh();if arg then self.open(arg) end;return self
 end
 function M.web(ctx)
@@ -923,7 +995,7 @@ function M.settings(ctx)
  function self.draw(ui)
   local a=ctx.area();local x,y,w,h=a.x,a.y,a.w,a.h
   local col=math.floor((w-3)/2)
-  local step=h<23 and 3 or 4;local motionY=h<23 and 12 or 18
+  local step=h<23 and 3 or 4;local motionY=h<23 and 11 or 14
   ui:text(x,y,'ОФОРМЛЕНИЕ',ui.c.muted)
   ui:text(x+col+3,y,'ЭКРАН',ui.c.muted)
   local themes={{'mint','Мята',0x8EDBD3},{'lilac','Лаванда',0xC9B8EB},{'amber','Песок',0xF3CD78}}
@@ -935,22 +1007,31 @@ function M.settings(ctx)
   for i,m in ipairs(modes) do
    if ctx.supports(m[1],m[2]) then ui:button('res-'..m[1],x+col+3,y+2+i*step,col,m[1]..' x '..m[2],function() ctx.resolution(m[1],m[2],false) end,not ctx.config.fit and ui.w==m[1] and ui.h==m[2]) end
   end
-  ui:button('settings-motion',x,y+motionY,col,ctx.config.motion and 'Анимации: включены' or 'Анимации: выключены',function() ctx.config.motion=not ctx.config.motion;ctx.saveConfig();ctx.dirty() end)
+  ui:button('settings-light',x,y+motionY,col,ctx.config.light and 'Лайт-режим: включён' or 'Лайт-режим: выключен',function()
+   ctx.config.light=not ctx.config.light
+   if ctx.config.light then ctx.config.motion=false end
+   ctx.saveConfig();ctx.dirty()
+  end,ctx.config.light)
+  ui:button('settings-motion',x,y+motionY+4,col,ctx.config.motion and 'Анимации: включены' or 'Анимации: выключены',function()
+   if ctx.config.light then ctx.toast('Сначала выключите лайт-режим');return end
+   ctx.config.motion=not ctx.config.motion;ctx.saveConfig();ctx.dirty()
+  end)
   ui:button('settings-autostart',x+col+3,y+motionY,col,'Автозапуск…',function()
    ctx.choose('Автозапуск Luma TV','F10 всегда возвращает в OpenOS.',{
     {'Включить',function() ctx.autostart(true) end},{'Выключить',function() ctx.autostart(false) end},{'Отмена',function() end}})
   end)
+  ui:button('settings-update',x+col+3,y+motionY+4,col,'Обновить и перезапустить',function() ctx.update() end)
   if h>=25 then
-   ui:text(x,y+21,'Luma TV 2.0.4',ui.c.text)
+   ui:text(x,y+22,'Luma TV 2.1.1',ui.c.text)
    ui:button('settings-about',x+col+3,y+21,col,'О системе…',function()
-    ctx.choose('Luma TV 2.0.4','Домашний экран для OpenComputers.\n\nМедиа: BMP и LTVA. Браузер: текст и ссылки, без JavaScript.\nКод: /usr/lib/lumatv/ · SDK: /home/lumatv/SDK_RU.md',{{'Закрыть',function() end}})
+    ctx.choose('Luma TV 2.1.1','Домашний экран для OpenComputers.\n\nМедиа: BMP, LTVA и LuVid (.lvd). Лайт-режим включён по умолчанию.\nКод: /usr/lib/lumatv/ · SDK: /home/lumatv/SDK_RU.md',{{'Закрыть',function() end}})
    end)
   end
  end
  return self
 end
 return M
-]],false,22697,2963249283)
+]],false,23807,2084659272)
  save([[/usr/lib/lumatv/binary.lua]],[[-- Fixed-width integer packing for Lua 5.2 and 5.3. No native bit operators.
 -- Supports the integer formats used by Luma: <, >, I2/I3/I4 and i4.
 local M={}
@@ -1086,6 +1167,73 @@ function M.ltva(path)
  if not ok then f:close();error(result,0) end
  return result
 end
+-- LuVid LVD1/OC-LITE. Frames use byte-oriented RLE over the fixed 16-color
+-- Luma palette; audio is trailing DFPWM. Layout:
+-- LVD1\nW H FPS COUNT AUDIOBYTES\n
+-- repeated: u32be encodedLength + encodedFrame, then DFPWM audio.
+function M.lvd(path)
+ local f=open(path)
+ local ok,result=pcall(function()
+  assert(f:read('*l')=='LVD1','Не LuVid LVD1')
+  local hdr=f:read('*l') or ''
+  local w,h,fps,count,abytes=hdr:match('^(%d+) (%d+) ([%d.]+) (%d+) (%d+)$')
+  w=tonumber(w);h=tonumber(h);fps=tonumber(fps);count=tonumber(count);abytes=tonumber(abytes)
+  assert(w and h and fps and count and abytes and w>=1 and w<=320 and h>=1 and h<=320 and fps>0 and fps<=15 and count>=1 and count<=1000000 and abytes>=0 and abytes<=5368709120,'Некорректный заголовок LVD')
+  -- A sparse index keeps multi-hour files usable without allocating one Lua
+  -- table entry per frame. Sequential playback uses the cached next offset.
+  local stride,checkpoints=300,{}
+  for i=1,count do
+   if (i-1)%stride==0 then checkpoints[math.floor((i-1)/stride)+1]=f:seek() end
+   local b=f:read(4);assert(b and #b==4,'Обрезан индекс LVD')
+   local n=b:byte(1)*16777216+b:byte(2)*65536+b:byte(3)*256+b:byte(4)
+   assert(n>0 and n<=w*h*2+1024,'Некорректный кадр LVD')
+   assert(f:seek('cur',n),'Обрезан кадр LVD')
+  end
+  local audioAt=f:seek();local size=f:seek('end')
+  assert(size==audioAt+abytes,'Неверный размер LVD')
+  local obj={w=w,h=h,fps=fps,count=count,audioBytes=abytes,audioAt=audioAt}
+  local lastIndex,lastNext
+  local function locate(index)
+   if lastIndex and index==lastIndex+1 then assert(f:seek('set',lastNext))
+   else
+    local block=math.floor((index-1)/stride)+1;local first=(block-1)*stride+1
+    assert(f:seek('set',checkpoints[block]))
+    for _=first,index-1 do
+     local b=f:read(4);assert(b and #b==4,'Обрезан индекс LVD')
+     local n=b:byte(1)*16777216+b:byte(2)*65536+b:byte(3)*256+b:byte(4)
+     assert(f:seek('cur',n))
+    end
+   end
+   local b=f:read(4);assert(b and #b==4,'Обрезан индекс LVD')
+   local n=b:byte(1)*16777216+b:byte(2)*65536+b:byte(3)*256+b:byte(4)
+   local at=f:seek();lastIndex=index;lastNext=at+n
+   return at,n
+  end
+  function obj.frame(index)
+   assert(index>=1 and index<=count,'Кадр вне диапазона')
+   local at,n=locate(index);assert(f:seek('set',at));local s=f:read(n);assert(s and #s==n,'Кадр LVD обрезан')
+   local pixels,at={},1
+   while at<=#s and #pixels<w*h do
+    local tag=s:byte(at);at=at+1
+    if tag<128 then
+     local n=tag+1;assert(at+n-1<=#s,'Литерал LVD обрезан')
+     for j=0,n-1 do local v=s:byte(at+j);assert(v<16,'Неизвестный цвет LVD');pixels[#pixels+1]=M.palette[v+1] end
+     at=at+n
+    else
+     local n=tag-127;local v=s:byte(at);at=at+1;assert(v and v<16,'RLE LVD обрезан')
+     local c=M.palette[v+1];for _=1,n do pixels[#pixels+1]=c end
+    end
+   end
+   assert(#pixels==w*h and at==#s+1,'Неверная длина кадра LVD')
+   return {w=w,h=h,pixels=pixels}
+  end
+  function obj.audioSource() return path,audioAt,abytes end
+  function obj.close() if f then f:close();f=nil end end
+  return obj
+ end)
+ if not ok then f:close();error(result,0) end
+ return result
+end
 function M.bmp(path)
  local f=open(path)
  local ok,result=pcall(function()
@@ -1119,7 +1267,7 @@ function M.draw(ui,frame,x,y,w,h)
  end end
 end
 return M
-]],false,4900,2619724765)
+]],false,8200,2727771116)
  save([[/usr/lib/lumatv/dfpwm.lua]],[[-- DFPWM1a codec, bit-exact with AudioPerf's Java implementation (verified).
 -- PCM format: signed 8-bit samples at 48000 Hz. 1 second = 6000 bytes DFPWM.
 local M={}
@@ -1307,7 +1455,7 @@ local M={}
 function M.start(url)
  if not component.isAvailable('internet') then return nil,'Нужна интернет-карта' end
  if type(url)~='string' or #url>2048 or not url:match('^https?://[^%s]+$') then return nil,'Нужен адрес http:// или https://' end
- local ok,h,e=pcall(component.internet.request,url,nil,{['User-Agent']='LumaTV/2.0',['Accept']='text/plain,text/html'})
+ local ok,h,e=pcall(component.internet.request,url,nil,{['User-Agent']='LumaTV/2.1.1',['Accept']='text/plain,text/html'})
  if not ok or not h then return nil,tostring(e or h) end
  return {h=h,started=computer.uptime(),chunks={},size=0,connected=false}
 end
@@ -1425,6 +1573,36 @@ function M.writer(data)
   return false
  end
  function w.progress() return math.min(1,(i-1)/#data) end
+ function w.close() end
+ return w
+end
+-- Streams a DFPWM region from disk to the tape without loading the complete
+-- soundtrack into RAM. This is required for feature-length LuVid files.
+function M.writerFile(path,offset,length)
+ if not M.available() then return nil,'Нужен магнитофон AudioPerf' end
+ local d=component.tape_drive
+ if not d.isReady() then return nil,'Вставьте кассету в магнитофон' end
+ if length>d.getSize() then return nil,'Звуковая дорожка длиннее кассеты' end
+ local f,e=io.open(path,'rb');if not f then return nil,e end
+ local ok,why=f:seek('set',offset);if not ok then f:close();return nil,why end
+ d.stop();d.seek(-d.getSize());d.seek(-d.getSize())
+ local done,closed=0,false
+ local w={}
+ function w.step()
+  if done>=length then
+   if not closed then f:close();closed=true end
+   d.seek(-d.getPosition());return true
+  end
+  local want=math.min(8192,length-done);local chunk,er=f:read(want)
+  if not chunk or #chunk~=want then w.close();error(er or 'Аудиодорожка LVD обрезана',0) end
+  d.write(chunk);done=done+#chunk
+  if done>=length then
+   f:close();closed=true;d.seek(-d.getPosition());return true
+  end
+  return false
+ end
+ function w.progress() return length==0 and 1 or math.min(1,done/length) end
+ function w.close() if not closed then pcall(f.close,f);closed=true end end
  return w
 end
 function M.play() local d=component.tape_drive;d.setSpeed(1);return d.play() end
@@ -1434,7 +1612,7 @@ function M.volume(v) component.tape_drive.setVolume(math.max(0,math.min(1,v))) e
 function M.position() return component.tape_drive.getPosition() end
 function M.atEnd() local d=component.tape_drive;return d.isEnd() or d.getState()~='PLAYING' end
 return M
-]],false,2350,268399114)
+]],false,3747,3667890582)
  save([[/usr/lib/lumatv/startup.lua]],[[local store=require('lumatv.storage')
 local fs=require('filesystem')
 local M={}
