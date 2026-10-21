@@ -1,7 +1,7 @@
--- Luma TV 2.0.3. OpenOS installer, Lua 5.2/5.3/5.4.
+-- Luma TV 2.0.4. OpenOS installer, Lua 5.2/5.3/5.4.
 -- Run: lua /home/luma-install.lua
 local function install()
- print('Luma TV 2.0.3: installation / установка')
+ print('Luma TV 2.0.4: installation / установка')
  local fs=require('filesystem')
  local total=0
  local function b64(s)
@@ -139,7 +139,7 @@ if force or not fs.exists(bmp) then
  end;assert(f:flush());f:close();print('Создано '..bmp)
 end
 ]],false,3823,3538152112)
- save([[/usr/bin/tv.lua]],[[-- Luma TV 2.0.3. Graphical home screen for OpenOS; no EEPROM changes, no host-side runtime.
+ save([[/usr/bin/tv.lua]],[[-- Luma TV 2.0.4. Graphical home screen for OpenOS; no EEPROM changes, no host-side runtime.
 local component=require('component')
 local computer=require('computer')
 local event=require('event')
@@ -158,13 +158,34 @@ local maxW,maxH=gpu.maxResolution()
 if maxW<80 or maxH<25 or gpu.maxDepth()<4 then io.stderr:write('Luma TV: нужен цветной GPU и экран минимум 80x25 (обычно T2+).\n');return end
 local oldW,oldH=gpu.getResolution();local oldFg,oldFp=gpu.getForeground();local oldBg,oldBp=gpu.getBackground();local oldDepth=gpu.getDepth()
 local palette={};if oldDepth==4 then for i=0,15 do palette[i]=gpu.getPaletteColor(i) end end
-local config={accent='mint',motion=true,width=math.min(120,maxW),height=math.min(40,maxH)}
+local function fittedResolution()
+ local blocksW,blocksH=1,1
+ local ok,screen=pcall(function() return component.proxy(gpu.getScreen()) end)
+ if ok and screen and screen.getAspectRatio then
+  local got,w,h=pcall(screen.getAspectRatio)
+  if got and tonumber(w) and tonumber(h) and w>0 and h>0 then blocksW,blocksH=w,h end
+ end
+ -- OpenComputers renders one character as 10x18 pixels.
+ local columnsPerRow=(blocksW/blocksH)*(18/10)
+ local w=maxW
+ local h=math.floor(w/columnsPerRow+0.5)
+ if h>maxH then h=maxH;w=math.floor(h*columnsPerRow+0.5) end
+ w=math.max(80,math.min(maxW,w));h=math.max(25,math.min(maxH,h))
+ return w,h
+end
+local fitW,fitH=fittedResolution()
+local config={accent='mint',motion=true,fit=true,width=fitW,height=fitH}
 local settings=store.read('/home/lumatv/settings.cfg',4096) or ''
+local sawFit=false
 for k,v in settings:gmatch('([%a]+)=([^\n]+)') do
  if k=='accent' and (v=='mint' or v=='lilac' or v=='amber') then config.accent=v
  elseif k=='motion' then config.motion=v=='1'
+ elseif k=='fit' then config.fit=v=='1';sawFit=true
  elseif k=='width' or k=='height' then config[k]=tonumber(v) or config[k] end
 end
+-- Migrate the old 2.0.3 default. Preserve other manually selected modes.
+if settings~='' and not sawFit and not (config.width==120 and config.height==40) then config.fit=false end
+if config.fit then config.width,config.height=fitW,fitH end
 local function validRes(w,h) return w>=80 and h>=25 and w<=maxW and h<=maxH and w%1==0 and h%1==0 end
 if not validRes(config.width,config.height) then config.width=80;config.height=25 end
 local ui
@@ -176,7 +197,7 @@ ctx.dirty=mark
 function ctx.area() return {x=3,y=6,w=ui.w-4,h=ui.h-9} end
 function ctx.toast(s) toast=tostring(s);toastUntil=computer.uptime()+4;mark() end
 function ctx.saveConfig()
- local s='accent='..config.accent..'\nmotion='..(config.motion and '1' or '0')..'\nwidth='..config.width..'\nheight='..config.height..'\n'
+ local s='accent='..config.accent..'\nmotion='..(config.motion and '1' or '0')..'\nfit='..(config.fit and '1' or '0')..'\nwidth='..config.width..'\nheight='..config.height..'\n'
  local ok,e=store.write('/home/lumatv/settings.cfg',s);if not ok then ctx.toast('Настройки не сохранены: '..tostring(e)) end
  mark()
 end
@@ -184,12 +205,13 @@ function ctx.applyConfig()
  if ui then ui.c.accent=({mint=0x8EDBD3,lilac=0xC9B8EB,amber=0xF3CD78})[config.accent] or 0x8EDBD3;mark() end
 end
 function ctx.supports(w,h) return validRes(w,h) end
-function ctx.resolution(w,h)
+function ctx.resolution(w,h,fit)
  if not validRes(w,h) then ctx.toast('Режим не поддерживается');return end
  local ok,e=pcall(gpu.setResolution,w,h)
  if not ok then ctx.toast(e);return end
- ui=UI.new(gpu,w,h);config.width=w;config.height=h;ctx.applyConfig();ctx.saveConfig();mark()
+ ui=UI.new(gpu,w,h);config.width=w;config.height=h;config.fit=fit==true;ctx.applyConfig();ctx.saveConfig();mark()
 end
+function ctx.fitResolution() ctx.resolution(fitW,fitH,true) end
 local function openModal(m)
  modalReturnFocus=ui.focus;modal=m;ui.focus='modal-1';mark()
 end
@@ -397,7 +419,7 @@ if not ok then
  store.write('/home/lumatv/last-error.log',tostring(err))
  io.stderr:write('Luma TV завершилась с ошибкой. Отчёт: /home/lumatv/last-error.log\n'..tostring(err)..'\n')
 end
-]],false,14216,1367360945)
+]],false,15299,3048848348)
  save([[/home/lumatv/SDK_RU.md]],[[# Luma TV · SDK для своих приложений
 
 Свои приложения — это обычные .lua-файлы в папке `/home/lumatv/apps/`.
@@ -901,16 +923,17 @@ function M.settings(ctx)
  function self.draw(ui)
   local a=ctx.area();local x,y,w,h=a.x,a.y,a.w,a.h
   local col=math.floor((w-3)/2)
-  local step=h<23 and 3 or 4;local motionY=h<23 and 12 or 15
+  local step=h<23 and 3 or 4;local motionY=h<23 and 12 or 18
   ui:text(x,y,'ОФОРМЛЕНИЕ',ui.c.muted)
   ui:text(x+col+3,y,'ЭКРАН',ui.c.muted)
   local themes={{'mint','Мята',0x8EDBD3},{'lilac','Лаванда',0xC9B8EB},{'amber','Песок',0xF3CD78}}
   for i,t in ipairs(themes) do
    ui:button('theme-'..t[1],x,y+2+(i-1)*step,col,t[2],function() ctx.config.accent=t[1];ctx.applyConfig();ctx.saveConfig() end,ctx.config.accent==t[1])
   end
-  local modes={{80,25},{120,40},{160,50}}
+  ui:button('res-auto',x+col+3,y+2,col,'По размеру: '..(ctx.config.width or ui.w)..' x '..(ctx.config.height or ui.h),function() if ctx.fitResolution then ctx.fitResolution() end end,ctx.config.fit)
+  local modes=h<23 and {{80,25},{120,40}} or {{80,25},{120,40},{160,50}}
   for i,m in ipairs(modes) do
-   if ctx.supports(m[1],m[2]) then ui:button('res-'..m[1],x+col+3,y+2+(i-1)*step,col,m[1]..' x '..m[2],function() ctx.resolution(m[1],m[2]) end,ui.w==m[1] and ui.h==m[2]) end
+   if ctx.supports(m[1],m[2]) then ui:button('res-'..m[1],x+col+3,y+2+i*step,col,m[1]..' x '..m[2],function() ctx.resolution(m[1],m[2],false) end,not ctx.config.fit and ui.w==m[1] and ui.h==m[2]) end
   end
   ui:button('settings-motion',x,y+motionY,col,ctx.config.motion and 'Анимации: включены' or 'Анимации: выключены',function() ctx.config.motion=not ctx.config.motion;ctx.saveConfig();ctx.dirty() end)
   ui:button('settings-autostart',x+col+3,y+motionY,col,'Автозапуск…',function()
@@ -918,16 +941,16 @@ function M.settings(ctx)
     {'Включить',function() ctx.autostart(true) end},{'Выключить',function() ctx.autostart(false) end},{'Отмена',function() end}})
   end)
   if h>=25 then
-   ui:text(x,y+21,'Luma TV 2.0',ui.c.text)
+   ui:text(x,y+21,'Luma TV 2.0.4',ui.c.text)
    ui:button('settings-about',x+col+3,y+21,col,'О системе…',function()
-    ctx.choose('Luma TV 2.0','Домашний экран для OpenComputers.\n\nМедиа: BMP и LTV. Браузер: текст и ссылки, без JavaScript — это предел самого мода.\nКод: /usr/lib/lumatv/ · SDK: /home/lumatv/SDK_RU.md',{{'Закрыть',function() end}})
+    ctx.choose('Luma TV 2.0.4','Домашний экран для OpenComputers.\n\nМедиа: BMP и LTVA. Браузер: текст и ссылки, без JavaScript.\nКод: /usr/lib/lumatv/ · SDK: /home/lumatv/SDK_RU.md',{{'Закрыть',function() end}})
    end)
   end
  end
  return self
 end
 return M
-]],false,22474,2503694074)
+]],false,22697,2963249283)
  save([[/usr/lib/lumatv/binary.lua]],[[-- Fixed-width integer packing for Lua 5.2 and 5.3. No native bit operators.
 -- Supports the integer formats used by Luma: <, >, I2/I3/I4 and i4.
 local M={}
